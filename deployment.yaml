@@ -2,66 +2,42 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: hello-flask
+  name: netstat-ui
 spec:
-  replicas: 3
+  replicas: 1
   selector:
     matchLabels:
-      app: hello-flask
+      app: netstat-ui
   template:
     metadata:
       labels:
-        app: hello-flask
+        app: netstat-ui
     spec:
+
       enableServiceLinks: false
       imagePullSecrets:
         - name: regcred
       containers:
-        - name: hello-flask
-          image: hello-flask
+        - name: netstat-ui
+          image: netstat-ui
+          ports:
+            - containerPort: 3001
+              name: http
           env:
-            - name: MY_POD_NAME
+            - name: POD_NAMESPACE
               valueFrom:
                 fieldRef:
-                  fieldPath: spec.nodeName
-          ports:
-            - containerPort: 8000
-              name: metrics
+                  fieldPath: metadata.namespace
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: hello-flask
+  name: netstat-ui
   labels:
-    app: hello-flask
+    app: netstat-ui
 spec:
   selector:
-    app: hello-flask
+    app: netstat-ui
   ports:
   - protocol: TCP
-    port: 8000
----
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: hello-flask
-  annotations:
-    kubernetes.io/ingress.class: shared
-    traefik.ingress.kubernetes.io/router.entrypoints: websecure
-    traefik.ingress.kubernetes.io/router.tls: "true"
-    external-dns.alpha.kubernetes.io/target: traefik.codemowers.ee
-spec:
-  rules:
-  - host: hello-lauri.codemowers.ee
-    http:
-      paths:
-      - pathType: Prefix
-        path: "/"
-        backend:
-          service:
-            name: hello-flask
-            port:
-              number: 8000
-  tls:
-  - hosts:
-    - "*.codemowers.ee"
+    port: 3001

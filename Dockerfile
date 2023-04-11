@@ -1,9 +1,7 @@
 FROM python:alpine AS build
 RUN apk add --no-cache gcc make musl-dev linux-headers git \
  && pip3 wheel --wheel-dir=/wheels \
-      flask \
-      prometheus-flask-exporter \
-      ecs-logging
+      sanic aiodns aiohttp
 
 FROM python:alpine
 COPY --from=build /wheels /wheels

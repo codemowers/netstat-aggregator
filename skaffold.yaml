@@ -1,7 +1,7 @@
 apiVersion: skaffold/v3
 kind: Config
 metadata:
-  name: hello-flask
+  name: netstat-ui
 
 deploy:
   kubectl: {}
@@ -12,9 +12,4 @@ manifests:
 
 build:
   artifacts:
-  - image: hello-flask
-
-  # Comment following lines below to build locally
-  cluster:
-    dockerConfig:
-      secretName: kaniko
+  - image: netstat-ui
