@@ -1,4 +1,31 @@
 ---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: netstat-ui
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: netstat-ui
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: netstat-ui
+subjects:
+- kind: ServiceAccount
+  name: netstat-ui
+  namespace: laurivosandi-jctkx
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: netstat-ui
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -13,7 +40,7 @@ spec:
       labels:
         app: netstat-ui
     spec:
-
+      serviceAccountName: netstat-ui
       enableServiceLinks: false
       imagePullSecrets:
         - name: regcred
@@ -41,3 +68,28 @@ spec:
   ports:
   - protocol: TCP
     port: 3001
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: arch
+  annotations:
+    external-dns.alpha.kubernetes.io/target: traefik.codemowers.ee
+    kubernetes.io/ingress.class: shared
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+spec:
+  tls:
+    - hosts:
+        - "*.codemowers.ee"
+  rules:
+    - host: "arch.codemowers.ee"
+      http:
+        paths:
+          - pathType: Prefix
+            path: /
+            backend:
+              service:
+                name: netstat-ui
+                port:
+                  number: 3001
