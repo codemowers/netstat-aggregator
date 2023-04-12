@@ -50,12 +50,11 @@ async def aggregate(ctx):
     aggregated = {"connections": [], "listening": []}
 
     for response in responses:
-        print("Adding:", response)
-        for cid, lport, raddr, rport, proto, state in response.get("connections", ()):
+        for cid, lport, raddr, rport, proto, state, hostname in response.get("connections", ()):
             try:
                 local_namespace, local_pod, _ = cid_to_container[cid]
             except KeyError:
-                print("Failed to resolve", cid)
+                print("Failed to resolve container", cid)
                 continue
             if local_namespace in IGNORED_NAMESPACES:
                 continue
@@ -70,6 +69,8 @@ async def aggregate(ctx):
             }
             remote = ip_to_pod.get(raddr)
             pair["remote"] = {"addr": raddr, "port": rport}
+            if hostname:
+                pair["remote"]["hostname"] = hostname
             if remote:
                 remote_namespace, remote_pod = remote
                 if remote_namespace in IGNORED_NAMESPACES:
@@ -102,10 +103,22 @@ async def render(request):
         if IPv4Address(remote["addr"]) in IPv4Network("10.96.0.0/12"):
             continue
 
-        key = humanize(local), humanize(remote)
+        hr = humanize(remote)
+        if remote.get("hostname"):
+            color = "yellow"
+        elif remote.get("pod"):
+            color = "green"
+        else:
+            color = "red"
+        key = humanize(local), hr
+        if key[0] == key[1]:
+            continue
         if key[0] < key[1]:
             key = key[1], key[0]
+        dot.attr("node", shape="box", style="filled", color=color)
+        dot.node(hr)
         connections[key] += 1
+
     for (l, r), count in connections.items():
         dot.edge(l, r, label=str(count))
     dot.format = "svg"
