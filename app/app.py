@@ -95,6 +95,7 @@ def humanize(j):
 
 @app.get("/diagram.svg")
 async def render(request):
+    filter_namespaces = request.args.getlist("namespaces")
     z = await aggregate(app.ctx)
     dot = graphviz.Graph("topology", engine="sfdp")
     connections = Counter()
@@ -102,7 +103,11 @@ async def render(request):
         local, remote = conn["local"], conn["remote"]
         if IPv4Address(remote["addr"]) in IPv4Network("10.96.0.0/12"):
             continue
-
+        if filter_namespaces:
+            matches = local.get("namespace") in filter_namespaces or \
+                remote.get("namespace") in filter_namespaces
+            if not matches:
+                continue
         hr = humanize(remote)
         if remote.get("hostname"):
             color = "yellow"
@@ -119,6 +124,7 @@ async def render(request):
         dot.node(hr)
         connections[key] += 1
 
+    dot.attr("node", shape="box", style="filled", color="gray")
     for (l, r), count in connections.items():
         dot.edge(l, r, label=str(count))
     dot.format = "svg"
