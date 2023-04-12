@@ -14,7 +14,6 @@ from sanic.response import json, raw
 app = Sanic("netstat-ui")
 
 POD_NAMESPACE = os.environ["POD_NAMESPACE"]
-IGNORED_NAMESPACES = os.environ.get("IGNORED_NAMESPACES", "longhorn-system").split(",")
 
 
 async def fetch_pods():
@@ -24,8 +23,15 @@ async def fetch_pods():
         v1 = client.CoreV1Api(api)
         for pod in (await v1.list_namespaced_pod("")).items:
             ip_to_pod[pod.status.pod_ip] = pod.metadata.namespace, pod.metadata.name
+            owner_kind, owner_name = None, None
+            if pod.metadata.owner_references:
+                owner_kind, owner_name = \
+                    pod.metadata.owner_references[0].kind, \
+                    pod.metadata.owner_references[0].name
             for status in pod.status.container_statuses or ():
-                cid_to_container[status.container_id] = pod.metadata.namespace, pod.metadata.name, status.name
+                cid_to_container[status.container_id] = pod.metadata.namespace, \
+                    pod.metadata.name, status.name, \
+                    owner_kind, owner_name
     return ip_to_pod, cid_to_container
 
 
@@ -36,9 +42,9 @@ async def fetch(url, session):
 
 async def aggregate(ctx):
     ip_to_pod, cid_to_container = await fetch_pods()
-    targets = await ctx.resolver.query(
-        "_http._tcp.netstat-server.%s.svc.cluster.local" % POD_NAMESPACE,
-        "SRV")
+    addr = "_http._tcp.netstat-server.%s.svc.cluster.local" % POD_NAMESPACE
+    print("Resolving SRV record for %s" % addr)
+    targets = await ctx.resolver.query(addr, "SRV")
     tasks = []
 
     async with aiohttp.ClientSession() as session:
@@ -52,11 +58,9 @@ async def aggregate(ctx):
     for response in responses:
         for cid, lport, raddr, rport, proto, state, hostname in response.get("connections", ()):
             try:
-                local_namespace, local_pod, _ = cid_to_container[cid]
+                local_namespace, local_pod, _, owner_kind, owner_name = cid_to_container[cid]
             except KeyError:
                 print("Failed to resolve container", cid)
-                continue
-            if local_namespace in IGNORED_NAMESPACES:
                 continue
             pair = {
                 "proto": proto,
@@ -65,6 +69,10 @@ async def aggregate(ctx):
                     "namespace": local_namespace,
                     "pod": local_pod,
                     "port": lport,
+                    "owner": {
+                        "kind": owner_kind,
+                        "name": owner_name,
+                    }
                 }
             }
             remote = ip_to_pod.get(raddr)
@@ -73,8 +81,6 @@ async def aggregate(ctx):
                 pair["remote"]["hostname"] = hostname
             if remote:
                 remote_namespace, remote_pod = remote
-                if remote_namespace in IGNORED_NAMESPACES:
-                    continue
                 pair["remote"]["namespace"] = remote_namespace
                 pair["remote"]["pod"] = remote_pod
             aggregated["connections"].append(pair)
@@ -87,15 +93,24 @@ async def fanout(request):
     return json(await aggregate(app.ctx))
 
 
-def humanize(j):
+def humanize(j, filter_namespaces=()):
     if j.get("pod"):
-        return "%s/%s" % (j["namespace"], j["pod"])
-    return "%s" % (j["addr"])
+        color = "#2acaea"
+        if filter_namespaces and j.get("namespace") in filter_namespaces:
+            color = "#00ff7f"
+        return "%s/%s" % (j["namespace"], j["owner"]["name"] if j.get("owner") else j["pod"]), color
+    elif j.get("hostname"):
+        color = "#ffff66"
+        return "%s" % (j["hostname"]), color
+    else:
+        color = "#ff4040"
+        return "%s" % (j["addr"]), color
 
 
 @app.get("/diagram.svg")
 async def render(request):
-    filter_namespaces = request.args.getlist("namespaces")
+    exclude_namespaces = request.args.getlist("exclude", ("longhorn-system", "metallb-system", "prometheus-operator"))
+    include_namespaces = request.args.getlist("include")
     z = await aggregate(app.ctx)
     dot = graphviz.Graph("topology", engine="sfdp")
     connections = Counter()
@@ -103,30 +118,31 @@ async def render(request):
         local, remote = conn["local"], conn["remote"]
         if IPv4Address(remote["addr"]) in IPv4Network("10.96.0.0/12"):
             continue
-        if filter_namespaces:
-            matches = local.get("namespace") in filter_namespaces or \
-                remote.get("namespace") in filter_namespaces
+        if local.get("namespace") in exclude_namespaces or \
+            remote.get("namespace") in exclude_namespaces:
+                continue
+        if include_namespaces:
+            matches = local.get("namespace") in include_namespaces or \
+                remote.get("namespace") in include_namespaces
             if not matches:
                 continue
-        hr = humanize(remote)
-        if remote.get("hostname"):
-            color = "yellow"
-        elif remote.get("pod"):
-            color = "green"
-        else:
-            color = "red"
-        key = humanize(local), hr
+        hr, cr = humanize(remote, include_namespaces)
+        hl, cl = humanize(local, include_namespaces)
+
+        key = hl, hr
         if key[0] == key[1]:
             continue
         if key[0] < key[1]:
             key = key[1], key[0]
-        dot.attr("node", shape="box", style="filled", color=color)
+        dot.attr("node", shape="box", style="filled", color=cr, fontname="sans")
         dot.node(hr)
+        dot.attr("node", shape="box", style="filled", color=cl, fontname="sans")
+        dot.node(hl)
         connections[key] += 1
 
-    dot.attr("node", shape="box", style="filled", color="gray")
+    dot.attr("node", shape="box", style="filled", color="#dddddd", fontname="sans")
     for (l, r), count in connections.items():
-        dot.edge(l, r, label=str(count))
+        dot.edge(l, r, label=str(count), fontname="sans")
     dot.format = "svg"
     return raw(dot.pipe(), content_type="image/svg+xml")
 
