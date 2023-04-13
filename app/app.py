@@ -22,12 +22,13 @@ async def fetch_pods():
     async with ApiClient() as api:
         v1 = client.CoreV1Api(api)
         for pod in (await v1.list_namespaced_pod("")).items:
-            ip_to_pod[pod.status.pod_ip] = pod.metadata.namespace, pod.metadata.name
             owner_kind, owner_name = None, None
             if pod.metadata.owner_references:
                 owner_kind, owner_name = \
                     pod.metadata.owner_references[0].kind, \
                     pod.metadata.owner_references[0].name
+            ip_to_pod[pod.status.pod_ip] = pod.metadata.namespace, \
+                pod.metadata.name, owner_kind, owner_name
             for status in pod.status.container_statuses or ():
                 cid_to_container[status.container_id] = pod.metadata.namespace, \
                     pod.metadata.name, status.name, \
@@ -80,9 +81,10 @@ async def aggregate(ctx):
             if hostname:
                 pair["remote"]["hostname"] = hostname
             if remote:
-                remote_namespace, remote_pod = remote
+                remote_namespace, remote_pod, owner_kind, owner_name = remote
                 pair["remote"]["namespace"] = remote_namespace
                 pair["remote"]["pod"] = remote_pod
+                pair["remote"]["owner"] = {"kind": owner_kind, "name": owner_name}
             aggregated["connections"].append(pair)
         aggregated["listening"] += response.get("listening", [])
     return aggregated
@@ -119,8 +121,8 @@ async def render(request):
         if IPv4Address(remote["addr"]) in IPv4Network("10.96.0.0/12"):
             continue
         if local.get("namespace") in exclude_namespaces or \
-            remote.get("namespace") in exclude_namespaces:
-                continue
+           remote.get("namespace") in exclude_namespaces:
+            continue
         if include_namespaces:
             matches = local.get("namespace") in include_namespaces or \
                 remote.get("namespace") in include_namespaces
