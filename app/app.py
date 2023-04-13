@@ -61,19 +61,30 @@ async def resolve_targets(ctx):
 
 async def aggregate(ctx):
     ip_to_pod, cid_to_container = await fetch_pods()
-    targets = await resolve_targets(ctx)
-    tasks = []
 
-    async with aiohttp.ClientSession() as session:
-        for target in targets:
-            url = "http://%s:%d/export" % (target.host, target.port)
-            tasks.append(fetch(url, session))
-        responses = await asyncio.gather(*tasks)
+    reverse_lookup_tasks = []
+    connection_tasks = []
+    aggregated_reverse_lookup = {}
     aggregated = {"connections": [], "listening": [], "reverse": {}}
 
-    for response in responses:
-        for key, value in response["reverse"].items():
-            aggregated["reverse"][key] = value
+    async with aiohttp.ClientSession() as session:
+        addr = "_http._tcp.dns-sniffer.kube-system.svc.cluster.local"
+        print("Resolving SRV record for %s" % addr)
+        for target in await ctx.resolver.query(addr, "SRV"):
+            url = "http://%s:%d/export" % (target.host, target.port)
+            reverse_lookup_tasks.append(fetch(url, session))
+        responses = await asyncio.gather(*reverse_lookup_tasks)
+
+        for response in responses:
+            for key, value in response.items():
+                aggregated_reverse_lookup[key] = value
+
+        targets = await resolve_targets(ctx)
+        for target in targets:
+            url = "http://%s:%d/export" % (target.host, target.port)
+            connection_tasks.append(fetch(url, session))
+        responses = await asyncio.gather(*connection_tasks)
+
 
     for response in responses:
         for cid, lport, raddr, rport, proto, state in response.get("connections", ()):
@@ -99,7 +110,7 @@ async def aggregate(ctx):
             }
             remote = ip_to_pod.get(raddr)
             pair["remote"] = {"addr": raddr, "port": rport}
-            hostname = aggregated["reverse"].get(raddr)
+            hostname = aggregated_reverse_lookup.get(raddr)
             if hostname:
                 pair["remote"]["hostname"] = hostname
             if remote:
