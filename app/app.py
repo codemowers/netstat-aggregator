@@ -9,14 +9,22 @@ from fnmatch import fnmatch
 from ipaddress import IPv4Address, IPv4Network
 from kubernetes_asyncio import client, config
 from kubernetes_asyncio.client.api_client import ApiClient
+from prometheus_client import Histogram
+from sanic_prometheus import monitor
 from sanic import Sanic
 from sanic.response import json, raw
 
 app = Sanic("netstat-ui")
 
+
+histogram_latency = Histogram("netstat_stage_latency_sec",
+    "Latency histogram",
+    ["stage"])
+
 POD_NAMESPACE = os.environ["POD_NAMESPACE"]
 
 
+@histogram_latency.labels("kube-api-get-pods").time()
 async def fetch_pods():
     ip_to_pod = {}
     cid_to_container = {}
@@ -37,18 +45,23 @@ async def fetch_pods():
     return ip_to_pod, cid_to_container
 
 
+@histogram_latency.labels("fetch-exports").time()
 async def fetch(url, session):
     print("Making HTTP request to %s" % url)
     async with session.get(url) as response:
-        print("Got response from %s" % url)
         return await response.json()
+
+
+@histogram_latency.labels("resolve-targets").time()
+async def resolve_targets(ctx):
+    addr = "_http._tcp.netstat-server.%s.svc.cluster.local" % POD_NAMESPACE
+    print("Resolving SRV record for %s" % addr)
+    return await ctx.resolver.query(addr, "SRV")
 
 
 async def aggregate(ctx):
     ip_to_pod, cid_to_container = await fetch_pods()
-    addr = "_http._tcp.netstat-server.%s.svc.cluster.local" % POD_NAMESPACE
-    print("Resolving SRV record for %s" % addr)
-    targets = await ctx.resolver.query(addr, "SRV")
+    targets = await resolve_targets(ctx)
     tasks = []
 
     async with aiohttp.ClientSession() as session:
@@ -56,9 +69,7 @@ async def aggregate(ctx):
             url = "http://%s:%d/export" % (target.host, target.port)
             tasks.append(fetch(url, session))
         responses = await asyncio.gather(*tasks)
-
-    aggregated = {"connections": [], "listening": [], "reverse":{}}
-    print("Got all responses")
+    aggregated = {"connections": [], "listening": [], "reverse": {}}
 
     for response in responses:
         for key, value in response["reverse"].items():
@@ -66,6 +77,8 @@ async def aggregate(ctx):
 
     for response in responses:
         for cid, lport, raddr, rport, proto, state in response.get("connections", ()):
+            if not cid:
+                continue
             try:
                 local_namespace, local_pod, _, owner_kind, owner_name = cid_to_container[cid]
             except KeyError:
@@ -166,11 +179,13 @@ async def render(request):
 
 @app.listener("before_server_start")
 async def setup_db(app, loop):
+
     app.ctx.resolver = aiodns.DNSResolver()
     if os.getenv("KUBECONFIG"):
         await config.load_kube_config()
     else:
         config.load_incluster_config()
 
-
-app.run(host="0.0.0.0", port=3001, single_process=True, motd=False)
+if __name__ == "__main__":
+    monitor(app).expose_endpoint()
+    app.run(host="0.0.0.0", port=3001, single_process=True, motd=False)

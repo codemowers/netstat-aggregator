@@ -26,6 +26,17 @@ kind: ServiceAccount
 metadata:
   name: netstat-ui
 ---
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: netstat-ui
+spec:
+  selector:
+    matchLabels:
+      app: netstat-ui
+  podMetricsEndpoints:
+    - port: http
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
