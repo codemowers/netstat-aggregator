@@ -5,6 +5,7 @@ import asyncio
 import graphviz
 import os
 from collections import Counter
+from fnmatch import fnmatch
 from ipaddress import IPv4Address, IPv4Network
 from kubernetes_asyncio import client, config
 from kubernetes_asyncio.client.api_client import ApiClient
@@ -37,7 +38,9 @@ async def fetch_pods():
 
 
 async def fetch(url, session):
+    print("Making HTTP request to %s" % url)
     async with session.get(url) as response:
+        print("Got response from %s" % url)
         return await response.json()
 
 
@@ -54,10 +57,15 @@ async def aggregate(ctx):
             tasks.append(fetch(url, session))
         responses = await asyncio.gather(*tasks)
 
-    aggregated = {"connections": [], "listening": []}
+    aggregated = {"connections": [], "listening": [], "reverse":{}}
+    print("Got all responses")
 
     for response in responses:
-        for cid, lport, raddr, rport, proto, state, hostname in response.get("connections", ()):
+        for key, value in response["reverse"].items():
+            aggregated["reverse"][key] = value
+
+    for response in responses:
+        for cid, lport, raddr, rport, proto, state in response.get("connections", ()):
             try:
                 local_namespace, local_pod, _, owner_kind, owner_name = cid_to_container[cid]
             except KeyError:
@@ -78,6 +86,7 @@ async def aggregate(ctx):
             }
             remote = ip_to_pod.get(raddr)
             pair["remote"] = {"addr": raddr, "port": rport}
+            hostname = aggregated["reverse"].get(raddr)
             if hostname:
                 pair["remote"]["hostname"] = hostname
             if remote:
@@ -95,13 +104,18 @@ async def fanout(request):
     return json(await aggregate(app.ctx))
 
 
-def humanize(j, filter_namespaces=()):
+def humanize(j, filter_namespaces=(), collapse_hostnames=()):
+    hostname = j.get("hostname")
     if j.get("pod"):
         color = "#2acaea"
         if filter_namespaces and j.get("namespace") in filter_namespaces:
             color = "#00ff7f"
         return "%s/%s" % (j["namespace"], j["owner"]["name"] if j.get("owner") else j["pod"]), color
-    elif j.get("hostname"):
+    elif hostname:
+        for pattern in collapse_hostnames:
+            if fnmatch(hostname, pattern):
+                hostname = pattern
+                break
         color = "#ffff66"
         return "%s" % (j["hostname"]), color
     else:
@@ -111,6 +125,7 @@ def humanize(j, filter_namespaces=()):
 
 @app.get("/diagram.svg")
 async def render(request):
+    collapse_hostnames = request.args.getlist("collapse_hostnames", ())
     exclude_namespaces = request.args.getlist("exclude", ("longhorn-system", "metallb-system", "prometheus-operator"))
     include_namespaces = request.args.getlist("include")
     z = await aggregate(app.ctx)
@@ -128,8 +143,8 @@ async def render(request):
                 remote.get("namespace") in include_namespaces
             if not matches:
                 continue
-        hr, cr = humanize(remote, include_namespaces)
-        hl, cl = humanize(local, include_namespaces)
+        hr, cr = humanize(remote, include_namespaces, collapse_hostnames)
+        hl, cl = humanize(local, include_namespaces, collapse_hostnames)
 
         key = hl, hr
         if key[0] == key[1]:
