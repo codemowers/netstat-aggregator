@@ -2,7 +2,6 @@
 import aiodns
 import aiohttp
 import asyncio
-import graphviz
 import os
 from collections import Counter
 from fnmatch import fnmatch
@@ -14,7 +13,7 @@ from sanic_prometheus import monitor
 from sanic import Sanic
 from sanic.response import json, raw
 
-app = Sanic("netstat-ui")
+app = Sanic("netstat-aggregator")
 
 
 histogram_latency = Histogram("netstat_stage_latency_sec",
@@ -128,69 +127,8 @@ async def fanout(request):
     return json(await aggregate(app.ctx))
 
 
-def humanize(j, filter_namespaces=(), collapse_hostnames=()):
-    hostname = j.get("hostname")
-    if j.get("pod"):
-        color = "#2acaea"
-        if filter_namespaces and j.get("namespace") in filter_namespaces:
-            color = "#00ff7f"
-        return "%s/%s" % (j["namespace"], j["owner"]["name"] if j.get("owner") else j["pod"]), color
-    elif hostname:
-        for pattern in collapse_hostnames:
-            if fnmatch(hostname, pattern):
-                hostname = pattern
-                break
-        color = "#ffff66"
-        return "%s" % (j["hostname"]), color
-    else:
-        color = "#ff4040"
-        return "%s" % (j["addr"]), color
-
-
-@app.get("/diagram.svg")
-async def render(request):
-    collapse_hostnames = request.args.getlist("collapse_hostnames", ())
-    exclude_namespaces = request.args.getlist("exclude", ("longhorn-system", "metallb-system", "prometheus-operator"))
-    include_namespaces = request.args.getlist("include")
-    z = await aggregate(app.ctx)
-    dot = graphviz.Graph("topology", engine="sfdp")
-    connections = Counter()
-    for conn in z["connections"]:
-        local, remote = conn["local"], conn["remote"]
-        if IPv4Address(remote["addr"]) in IPv4Network("10.96.0.0/12"):
-            continue
-        if local.get("namespace") in exclude_namespaces or \
-           remote.get("namespace") in exclude_namespaces:
-            continue
-        if include_namespaces:
-            matches = local.get("namespace") in include_namespaces or \
-                remote.get("namespace") in include_namespaces
-            if not matches:
-                continue
-        hr, cr = humanize(remote, include_namespaces, collapse_hostnames)
-        hl, cl = humanize(local, include_namespaces, collapse_hostnames)
-
-        key = hl, hr
-        if key[0] == key[1]:
-            continue
-        if key[0] < key[1]:
-            key = key[1], key[0]
-        dot.attr("node", shape="box", style="filled", color=cr, fontname="sans")
-        dot.node(hr)
-        dot.attr("node", shape="box", style="filled", color=cl, fontname="sans")
-        dot.node(hl)
-        connections[key] += 1
-
-    dot.attr("node", shape="box", style="filled", color="#dddddd", fontname="sans")
-    for (l, r), count in connections.items():
-        dot.edge(l, r, label=str(count), fontname="sans")
-    dot.format = "svg"
-    return raw(dot.pipe(), content_type="image/svg+xml")
-
-
 @app.listener("before_server_start")
 async def setup_db(app, loop):
-
     app.ctx.resolver = aiodns.DNSResolver()
     if os.getenv("KUBECONFIG"):
         await config.load_kube_config()

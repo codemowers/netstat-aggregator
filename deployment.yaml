@@ -2,7 +2,7 @@
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: netstat-ui
+  name: netstat-aggregator
 rules:
 - apiGroups: [""]
   resources: ["pods"]
@@ -11,53 +11,53 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: netstat-ui
+  name: netstat-aggregator
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: netstat-ui
+  name: netstat-aggregator
 subjects:
 - kind: ServiceAccount
-  name: netstat-ui
+  name: netstat-aggregator
   namespace: laurivosandi-jctkx
 ---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: netstat-ui
+  name: netstat-aggregator
 ---
 apiVersion: monitoring.coreos.com/v1
 kind: PodMonitor
 metadata:
-  name: netstat-ui
+  name: netstat-aggregator
 spec:
   selector:
     matchLabels:
-      app: netstat-ui
+      app: netstat-aggregator
   podMetricsEndpoints:
     - port: http
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: netstat-ui
+  name: netstat-aggregator
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: netstat-ui
+      app: netstat-aggregator
   template:
     metadata:
       labels:
-        app: netstat-ui
+        app: netstat-aggregator
     spec:
-      serviceAccountName: netstat-ui
+      serviceAccountName: netstat-aggregator
       enableServiceLinks: false
       imagePullSecrets:
         - name: regcred
       containers:
-        - name: netstat-ui
-          image: netstat-ui
+        - name: netstat-aggregator
+          image: netstat-aggregator
           ports:
             - containerPort: 3001
               name: http
@@ -70,12 +70,12 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: netstat-ui
+  name: netstat-aggregator
   labels:
-    app: netstat-ui
+    app: netstat-aggregator
 spec:
   selector:
-    app: netstat-ui
+    app: netstat-aggregator
   ports:
   - protocol: TCP
     port: 3001
@@ -101,6 +101,6 @@ spec:
             path: /
             backend:
               service:
-                name: netstat-ui
+                name: netstat-aggregator
                 port:
                   number: 3001
