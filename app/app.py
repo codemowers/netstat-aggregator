@@ -67,10 +67,10 @@ async def aggregate(ctx):
     aggregated = {"connections": [], "listening": [], "reverse": {}}
 
     async with aiohttp.ClientSession() as session:
-        addr = "_http._tcp.dns-sniffer.kube-system.svc.cluster.local"
+        addr = "_http._tcp.dnstap.kube-system.svc.cluster.local"
         print("Resolving SRV record for %s" % addr)
         for target in await ctx.resolver.query(addr, "SRV"):
-            url = "http://%s:%d/export" % (target.host, target.port)
+            url = "http://admin:changeme@%s:%d/reverse" % (target.host, target.port)
             reverse_lookup_tasks.append(fetch(url, session))
         responses = await asyncio.gather(*reverse_lookup_tasks)
 
