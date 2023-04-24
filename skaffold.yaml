@@ -13,3 +13,9 @@ manifests:
 build:
   artifacts:
   - image: netstat-aggregator
+
+portForward:
+  - resourceType: deployment
+    resourceName: netstat-aggregator
+    port: 3001
+    localPort: 3001

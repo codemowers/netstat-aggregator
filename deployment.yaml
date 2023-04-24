@@ -1,4 +1,39 @@
 ---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: whois-cache
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: whois-cache
+  template:
+    metadata:
+      labels:
+        app: whois-cache
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: whois
+          image: codemowers/whois
+          ports:
+            - containerPort: 3005
+              name: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: whois-cache
+  labels:
+    app: whois-cache
+spec:
+  selector:
+    app: whois-cache
+  ports:
+  - protocol: TCP
+    port: 3005
+---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -62,6 +97,8 @@ spec:
             - containerPort: 3001
               name: http
           env:
+            - name: URL_WHOIS_CACHE
+              value: http://whois-cache:3005
             - name: POD_NAMESPACE
               valueFrom:
                 fieldRef:

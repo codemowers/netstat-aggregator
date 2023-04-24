@@ -21,6 +21,7 @@ histogram_latency = Histogram("netstat_stage_latency_sec",
     ["stage"])
 
 POD_NAMESPACE = os.environ["POD_NAMESPACE"]
+URL_WHOIS_CACHE = os.getenv("URL_WHOIS_CACHE")
 
 
 @histogram_latency.labels("kube-api-get-pods").time()
@@ -58,6 +59,22 @@ async def resolve_targets(ctx):
     return await ctx.resolver.query(addr, "SRV")
 
 
+@histogram_latency.labels("fetch-whois-cache").time()
+async def fetch_whois_cache(session):
+    url = "%s/export" % URL_WHOIS_CACHE
+    print("Making HTTP request to %s" % url)
+    async with session.get(url) as response:
+        return await response.json()
+
+
+@histogram_latency.labels("whois-query").time()
+async def whois_lookup(session, q):
+    url = "%s/query/%s" % (URL_WHOIS_CACHE, q)
+    print("Making HTTP request to %s" % url)
+    async with session.get(url) as response:
+        return await response.json()
+
+
 async def aggregate(ctx):
     ip_to_pod, cid_to_container = await fetch_pods()
 
@@ -67,6 +84,8 @@ async def aggregate(ctx):
     aggregated = {"connections": [], "listening": [], "reverse": {}}
 
     async with aiohttp.ClientSession() as session:
+        if URL_WHOIS_CACHE:
+            whois = await fetch_whois_cache(session)
         addr = "_http._tcp.dnstap.kube-system.svc.cluster.local"
         print("Resolving SRV record for %s" % addr)
         for target in await ctx.resolver.query(addr, "SRV"):
@@ -85,40 +104,44 @@ async def aggregate(ctx):
         responses = await asyncio.gather(*connection_tasks)
 
 
-    for response in responses:
-        for cid, lport, raddr, rport, proto, state in response.get("connections", ()):
-            if not cid:
-                continue
-            try:
-                local_namespace, local_pod, _, owner_kind, owner_name = cid_to_container[cid]
-            except KeyError:
-                print("Failed to resolve container", cid)
-                continue
-            pair = {
-                "proto": proto,
-                "state": state,
-                "local": {
-                    "namespace": local_namespace,
-                    "pod": local_pod,
-                    "port": lport,
-                    "owner": {
-                        "kind": owner_kind,
-                        "name": owner_name,
+        for response in responses:
+            for cid, lport, raddr, rport, proto, state in response.get("connections", ()):
+                if not cid:
+                    continue
+                try:
+                    local_namespace, local_pod, _, owner_kind, owner_name = cid_to_container[cid]
+                except KeyError:
+                    print("Failed to resolve container", cid)
+                    continue
+                pair = {
+                    "proto": proto,
+                    "state": state,
+                    "local": {
+                        "namespace": local_namespace,
+                        "pod": local_pod,
+                        "port": lport,
+                        "owner": {
+                            "kind": owner_kind,
+                            "name": owner_name,
+                        }
                     }
                 }
-            }
-            remote = ip_to_pod.get(raddr)
-            pair["remote"] = {"addr": raddr, "port": rport}
-            hostname = aggregated_reverse_lookup.get(raddr)
-            if hostname:
-                pair["remote"]["hostname"] = hostname
-            if remote:
-                remote_namespace, remote_pod, owner_kind, owner_name = remote
-                pair["remote"]["namespace"] = remote_namespace
-                pair["remote"]["pod"] = remote_pod
-                pair["remote"]["owner"] = {"kind": owner_kind, "name": owner_name}
-            aggregated["connections"].append(pair)
-        aggregated["listening"] += response.get("listening", [])
+                remote = ip_to_pod.get(raddr)
+                pair["remote"] = {"addr": raddr, "port": rport}
+                hostname = aggregated_reverse_lookup.get(raddr)
+                if hostname:
+                    if URL_WHOIS_CACHE and not hostname.endswith(".local"):
+                        if hostname not in whois:
+                            whois[hostname] = await whois_lookup(session, hostname)
+                        pair["remote"]["whois"] = whois[hostname]
+                    pair["remote"]["hostname"] = hostname
+                if remote:
+                    remote_namespace, remote_pod, owner_kind, owner_name = remote
+                    pair["remote"]["namespace"] = remote_namespace
+                    pair["remote"]["pod"] = remote_pod
+                    pair["remote"]["owner"] = {"kind": owner_kind, "name": owner_name}
+                aggregated["connections"].append(pair)
+            aggregated["listening"] += response.get("listening", [])
     return aggregated
 
 
